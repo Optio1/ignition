@@ -1,0 +1,209 @@
+variant: fcos
+version: 1.6.0
+passwd:
+  users:
+    - name: kubeadmin
+      ssh_authorized_keys:
+        - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMWZpAT9PJ8T9wRlduuA9uvAabhl+0XmWF6ARq0DpDoa
+      groups:
+        - wheel
+        - sudo
+systemd:
+  units:
+    - name: postinst.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=First Boot Setup
+        After=systemd-machine-id-commit.service
+        After=network-online.target
+        Before=zincati.service
+        ConditionPathExists=!/var/lib/%N.stamp
+        
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStart=/usr/bin/rpm-ostree install firewalld qemu-guest-agent unbound kubeadm kubectl kubelet
+        ExecStart=/usr/bin/curl https://raw.githubusercontent.com/GrapheneOS/infrastructure/refs/heads/main/chrony.conf -o /etc/chrony.conf
+        ExecStart=/bin/systemctl disable systemd-resolved
+        ExecStart=/bin/touch /var/lib/%N.stamp
+        ExecStart=/bin/systemctl --no-block reboot
+
+        [Install]
+        WantedBy=multi-user.target
+    - name: gvisor-update.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=gVisor Updater
+        After=network-online.target unbound.service
+        Wants=network-online.target unbound.service
+        Before=crio.service
+
+        [Service]
+        WorkingDirectory=/var/roothome
+        Type=oneshot
+        Restart=on-failure
+        ExecStart=/usr/bin/sleep 10
+        ExecStart=/usr/bin/curl -O https://storage.googleapis.com/gvisor/releases/release/latest/x86_64/runsc
+        ExecStart=/usr/bin/curl -O https://storage.googleapis.com/gvisor/releases/release/latest/x86_64/runsc.sha512
+        ExecStart=/usr/bin/curl -O https://storage.googleapis.com/gvisor/releases/release/latest/x86_64/containerd-shim-runsc-v1
+        ExecStart=/usr/bin/curl -O https://storage.googleapis.com/gvisor/releases/release/latest/x86_64/containerd-shim-runsc-v1.sha512
+        ExecStart=/usr/bin/sha512sum -c runsc.sha512 -c containerd-shim-runsc-v1.sha512
+        ExecStart=/usr/bin/rm -f runsc.sha512 containerd-shim-runsc-v1.sha512
+        ExecStart=/usr/bin/chmod a+rx runsc containerd-shim-runsc-v1
+        ExecStart=/usr/bin/mv runsc containerd-shim-runsc-v1 /var/usrlocal/bin
+
+        [Install]
+        WantedBy=multi-user.target
+    - name: rpm-ostree-countme.timer
+      enabled: false
+      mask: true
+    - name: systemd-oomd.service
+      enabled: true
+    - name: fstrim.timer
+      enabled: true
+    - name: containerd.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Containerd
+        After=gvisor-update.service
+        After=network-online.target
+        Wants=network-online.target
+        Before=kubelet.service
+
+        [Service]
+        ExecStart=/usr/bin/containerd
+        Restart=always
+        RestartSec=5
+
+        [Install]
+        WantedBy=multi-user.target
+    - name: kubelet.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Kubelet
+        After=containerd.service
+        Wants=containerd.service
+
+        [Service]
+        ExecStart=/usr/bin/kubelet
+        Restart=always
+        RestartSec=10
+        EnvironmentFile=/etc/sysconfig/kubelet
+
+        [Install]
+        WantedBy=multi-user.target
+storage:
+  files:
+    - path: /etc/resolv.conf
+      overwrite: true
+      contents:
+        inline: |
+          nameserver 127.0.0.1
+    - path: /etc/sysctl.d/k8s.conf
+      overwrite: true
+      contents:
+        inline: |
+          net.bridge.bridge-nf-call-iptables = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.ipv4.ip_forward = 1
+    - path: /etc/yum.repos.d/kubernetes.repo
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: |
+          [kubernetes]
+          name=Kubernetes
+          baseurl=https://pkgs.k8s.io/core:/stable:/v1.32/rpm/
+          enabled=1
+          gpgcheck=1
+          gpgkey=https://pkgs.k8s.io/core:/stable:/v1.32/rpm/repodata/repomd.xml.key
+    - path: /etc/zincati/config.d/55-updates-strategy.toml
+      contents:
+        inline: |
+          [updates]
+          strategy = "periodic"
+    
+    - path: /etc/unbound/unbound.conf
+      overwrite: true
+      contents:
+        inline: |
+          server:
+            chroot: ""
+            auto-trust-anchor-file: "/var/lib/unbound/root.key"
+            trust-anchor-signaling: yes
+            root-key-sentinel: yes
+
+            tls-cert-bundle: /etc/ssl/certs/ca-certificates.crt
+            tls-ciphers: "PROFILE=SYSTEM"
+
+            hide-http-user-agent: yes
+            hide-identity: yes
+            hide-trustanchor: yes
+            hide-version: yes
+
+            deny-any: yes
+            harden-algo-downgrade: yes
+            harden-large-queries: yes
+            harden-referral-path: yes
+            harden-short-bufsize: yes
+            ignore-cd-flag: yes
+            max-udp-size: 3072
+            module-config: "validator iterator"
+            qname-minimisation-strict: yes
+            unwanted-reply-threshold: 10000000
+            use-caps-for-id: yes
+
+            outgoing-port-permit: 1024-65535
+
+            prefetch: yes
+            prefetch-key: yes
+
+          forward-zone:
+            name: "."
+            forward-tls-upstream: yes
+            forward-addr: 208.67.222.222@853#dns.umbrella.com
+            forward-addr: 208.67.220.220@853#dns.umbrella.com
+    - path: /etc/systemd/system/unbound.service.d/override.conf
+      contents:
+        inline: |
+          [Unit]
+          MemoryDenyWriteExecute=true
+          PrivateDevices=true
+          PrivateTmp=true
+          ProtectHome=true
+          ProtectClock=true
+          ProtectControlGroups=true
+          ProtectKernelLogs=true
+          ProtectKernelModules=true
+          ProtectKernelTunables=true
+          ProtectProc=invisible
+          RestrictAddressFamilies=AF_INET AF_NETLINK AF_UNIX
+          RestrictRealtime=true
+          SystemCallArchitectures=native
+          SystemCallFilter=~@clock @cpu-emulation @debug @keyring @module mount @obsolete @resources
+          RestrictNamespaces=yes
+          LockPersonality=yes
+    - path: /etc/containerd/config.toml
+      overwrite: true
+      contents:
+        inline: |
+          version = 2
+          [plugins]
+            [plugins."io.containerd.grpc.v1.cri"]
+              sandbox_image = "registry.k8s.io/pause:3.10"
+              [plugins."io.containerd.grpc.v1.cri".containerd]
+                default_runtime_name = "runsc-ptrace"
+                [plugins."io.containerd.grpc.v1.cri".containerd.runtimes]
+                  [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc]
+                    runtime_type = "io.containerd.runsc.v1"
+                    privileged_without_host_devices = false
+                    pod_annotations = ["io.kubernetes.cri.untrusted-workload"]
+  links:
+    - path: /etc/localtime
+      target: /usr/share/zoneinfo/America/Chicago
+    - path: /etc/systemd/system/multi-user.target.wants/unbound.service
+      target: /usr/lib/systemd/system/unbound.service
