@@ -24,6 +24,8 @@ systemd:
         Type=oneshot
         RemainAfterExit=yes
         ExecStart=/usr/bin/rpm-ostree install firewalld qemu-guest-agent kubeadm kubectl kubelet cri-o
+        ExecStart=/bin/systemctl enable crio.service
+        ExecStart=/bin/systemctl start crio.service
         ExecStart=/bin/touch /var/lib/%N.stamp
         ExecStart=/bin/systemctl --no-block reboot
 
@@ -41,8 +43,8 @@ systemd:
       contents: |
         [Unit]
         Description=Kubelet
-        After=containerd.service
-        Wants=containerd.service
+        After=crio.service
+        Wants=crio.service
 
         [Service]
         ExecStart=/usr/bin/kubelet
@@ -52,8 +54,6 @@ systemd:
 
         [Install]
         WantedBy=multi-user.target
-    - name: crio.service
-      enabled: true
 storage:
   files:
     - path: /etc/yum.repos.d/kubernetes.repo
