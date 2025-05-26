@@ -24,7 +24,6 @@ systemd:
         Type=oneshot
         RemainAfterExit=yes
         ExecStart=/usr/bin/rpm-ostree install firewalld qemu-guest-agent kubeadm kubectl kubelet cri-o
-        ExecStart=/usr/bin/rpm-ostree uninstall zram-generator-defaults
         ExecStart=/usr/bin/curl https://raw.githubusercontent.com/GrapheneOS/infrastructure/refs/heads/main/chrony.conf -o /etc/chrony.conf
         ExecStart=/bin/systemctl disable systemd-resolved
         ExecStart=/bin/touch /var/lib/%N.stamp
