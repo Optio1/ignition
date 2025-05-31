@@ -24,8 +24,6 @@ systemd:
         Type=oneshot
         RemainAfterExit=yes
         ExecStart=/usr/bin/rpm-ostree install firewalld qemu-guest-agent kubeadm kubectl kubelet cri-o
-        ExecStart=/bin/systemctl enable crio.service
-        ExecStart=/bin/systemctl start crio.service
         ExecStart=/bin/touch /var/lib/%N.stamp
         ExecStart=/bin/systemctl --no-block reboot
 
@@ -54,8 +52,65 @@ systemd:
 
         [Install]
         WantedBy=multi-user.target
+    - name: crio.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Container Runtime Interface for OCI (CRI-O)
+        Documentation=https://github.com/cri-o/cri-o
+        Wants=network-online.target
+        Before=kubelet.service
+        After=network-online.target
+
+        [Service]
+        Type=notify
+        EnvironmentFile=-/etc/sysconfig/crio
+        Environment=GOTRACEBACK=crash
+        ExecStart=/usr/bin/crio \
+                  $CRIO_CONFIG_OPTIONS \
+                  $CRIO_RUNTIME_OPTIONS \
+                  $CRIO_STORAGE_OPTIONS \
+                  $CRIO_NETWORK_OPTIONS \
+                  $CRIO_METRICS_OPTIONS
+        ExecReload=/bin/kill -s HUP $MAINPID
+        TasksMax=infinity
+        LimitNOFILE=1048576
+        LimitNPROC=1048576
+        LimitCORE=infinity
+        OOMScoreAdjust=-999
+        TimeoutStartSec=0
+        Restart=on-failure
+        RestartSec=10
+        WatchdogSec=60s
+
+        [Install]
+        WantedBy=multi-user.target
+        Alias=cri-o.service
+
+
 storage:
   files:
+    - path: /etc/crio/crio.conf.d/99-cgroup-manager.conf
+      mode: 420
+      contents:
+        inline: |
+          [crio.runtime]
+          cgroup_manager = "systemd"
+    - path: /var/home/kubeadmin/clusterconfig.yaml
+      contents:
+        inline: |
+          apiVersion: kubeadm.k8s.io/v1beta3
+          kind: ClusterConfiguration
+          kubernetesVersion: v1.33.1
+          # controlPlaneEndpoint: "" control plane endpoint for the future
+          controllerManager:
+            extraArgs:
+              flex-volume-plugin-dir: "/etc/kubernetes/kubelet-plugins/volume/exec"
+          networking:
+            podSubnet: 10.244.0.0/16
+          ---
+          apiVersion: kubeadm.k8s.io/v1beta3
+          kind: InitConfiguration
     - path: /etc/yum.repos.d/kubernetes.repo
       mode: 0644
       overwrite: true
