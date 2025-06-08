@@ -1,0 +1,157 @@
+variant: fcos
+version: 1.6.0
+systemd:
+  units:
+    - name: inst.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=First Boot Setup
+        After=systemd-machine-id-commit.service
+        After=network-online.target
+        Before=zincati.service
+        Before=postinst.service
+        ConditionPathExists=!/var/lib/%N.stamp
+        
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStart=/usr/bin/rpm-ostree install firewalld qemu-guest-agent kubeadm kubectl kubelet cri-o
+        ExecStart=/bin/touch /var/lib/%N.stamp
+        ExecStart=/bin/systemctl --no-block reboot
+
+        [Install]
+        WantedBy=multi-user.target
+    - name: postinst.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Post software install commands
+        After=inst.service
+        After=network-online.target
+        After=crio.service
+        Wants=crio.service
+        Wants=network-online.target
+        Before=zincati.service
+        ConditionPathExists=/var/lib/%N.stamp
+        ConditionPathExists=!/var/lib/%N.inst.stamp
+        
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStart=/usr/bin/kubeadm ------------------------join command
+        ExecStart=/bin/touch /var/lib/%N.inst.stamp
+
+    - name: rpm-ostree-countme.timer
+      enabled: false
+      mask: true
+    - name: systemd-oomd.service
+      enabled: true
+    - name: fstrim.timer
+      enabled: true
+    - name: kubelet.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Kubelet
+        After=crio.service
+        Wants=crio.service
+
+        [Service]
+        ExecStart=/usr/bin/kubelet
+        Restart=always
+        RestartSec=10
+        EnvironmentFile=/etc/sysconfig/kubelet
+
+        [Install]
+        WantedBy=multi-user.target
+    - name: crio.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Container Runtime Interface for OCI (CRI-O)
+        Documentation=https://github.com/cri-o/cri-o
+        Wants=network-online.target
+        Before=kubelet.service
+        After=network-online.target
+
+        [Service]
+        Type=notify
+        EnvironmentFile=-/etc/sysconfig/crio
+        Environment=GOTRACEBACK=crash
+        ExecStart=/usr/bin/crio \
+                  $CRIO_CONFIG_OPTIONS \
+                  $CRIO_RUNTIME_OPTIONS \
+                  $CRIO_STORAGE_OPTIONS \
+                  $CRIO_NETWORK_OPTIONS \
+                  $CRIO_METRICS_OPTIONS
+        ExecReload=/bin/kill -s HUP $MAINPID
+        TasksMax=infinity
+        LimitNOFILE=1048576
+        LimitNPROC=1048576
+        LimitCORE=infinity
+        OOMScoreAdjust=-999
+        TimeoutStartSec=0
+        Restart=on-failure
+        RestartSec=10
+        WatchdogSec=60s
+
+        [Install]
+        WantedBy=multi-user.target
+        Alias=cri-o.service
+
+
+storage:
+  files:
+    - path: /etc/crio/crio.conf.d/99-cgroup-manager.conf
+      mode: 420
+      contents:
+        inline: |
+          [crio.runtime]
+          cgroup_manager = "systemd"
+    - path: /var/home/kubeadmin/clusterconfig.yaml
+      contents:
+        inline: |
+          apiVersion: kubeadm.k8s.io/v1beta3
+          kind: ClusterConfiguration
+          kubernetesVersion: v1.33.1
+          # controlPlaneEndpoint: "" control plane endpoint for the future
+          controllerManager:
+            extraArgs:
+              flex-volume-plugin-dir: "/etc/kubernetes/kubelet-plugins/volume/exec"
+          networking:
+            podSubnet: 10.244.0.0/16
+          ---
+          apiVersion: kubeadm.k8s.io/v1beta3
+          kind: InitConfiguration
+    - path: /etc/yum.repos.d/kubernetes.repo
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: |
+          [kubernetes]
+          name=Kubernetes
+          baseurl=https://pkgs.k8s.io/core:/stable:/v1.33/rpm/
+          enabled=1
+          gpgcheck=1
+          gpgkey=https://pkgs.k8s.io/core:/stable:/v1.33/rpm/repodata/repomd.xml.key
+    - path: /etc/sysctl.d/k8s.conf
+      overwrite: true
+      contents:
+        inline: |
+          net.bridge.bridge-nf-call-iptables = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.ipv4.ip_forward = 1
+    - path: /etc/zincati/config.d/55-updates-strategy.toml
+      contents:
+        inline: |
+          [updates]
+          strategy = "periodic"
+    - path: /etc/modules-load.d/crio-net.conf
+      contents: 
+        inline: |
+          overlay
+          br_netfilter
+  links:
+    - path: /etc/localtime
+      target: /usr/share/zoneinfo/America/Chicago
